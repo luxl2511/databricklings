@@ -1,0 +1,162 @@
+id: d02-l03
+domain: 2
+order: 3
+title: COPY INTO, batch vs incremental, and external sources
+body: |
+  Not every ingestion problem needs a stream. This lesson covers the SQL-first
+  loader, when it beats Auto Loader, and how Databricks wants you to pull data
+  from systems that are not object storage.
+
+  ## COPY INTO
+
+  COPY INTO loads files from a location into an existing Delta table. It is
+  retriable and idempotent: files that were already loaded are skipped on the next
+  run, so scheduling the same statement repeatedly does not duplicate data.
+
+  ```sql
+  COPY INTO sales.orders_bronze
+  FROM 's3://lake/landing/orders/'
+  FILEFORMAT = JSON
+  PATTERN = '2026/06/*.json'
+  FORMAT_OPTIONS ('multiLine' = 'true')
+  COPY_OPTIONS ('mergeSchema' = 'true')
+  ```
+
+  Worth memorizing:
+
+  - The target table must exist, COPY INTO never creates it. For schemaless
+    ingestion create an empty table first and set `mergeSchema` to `true` in
+    COPY_OPTIONS so the table schema evolves with the data.
+  - `FILES = (...)` names up to 1000 explicit files, `PATTERN` takes a glob. The
+    two cannot be combined.
+  - `COPY_OPTIONS ('force' = 'true')` disables idempotency and reloads files even
+    if they were loaded before, the tool for re-delivered or corrected files.
+  - `VALIDATE` (all rows or for example `VALIDATE 10 ROWS`) checks parseability
+    and schema fit without writing anything.
+  - A `SELECT` list between FROM and the source allows casts and expressions
+    during the load.
+
+  ## COPY INTO vs Auto Loader
+
+  Both are incremental and both track loaded files. The guidance from Databricks:
+  thousands of files over time, COPY INTO is fine and reloading a named subset is
+  easier. Millions of files and ongoing arrival, Auto Loader needs fewer discovery
+  operations, splits work into batches and is cheaper at scale. Frequent schema
+  drift also favors Auto Loader with its evolution modes and rescued data. The two
+  combine well: an Auto Loader stream runs continuously while a one-off COPY INTO
+  with `force` repairs a subset.
+
+  ## Batch vs incremental
+
+  A nightly `spark.read` over the whole landing zone reprocesses everything and
+  costs more every day. The incremental batch pattern instead runs a stream that
+  stops when caught up:
+
+  ```python
+  (df.writeStream
+      .trigger(availableNow=True)
+      .option("checkpointLocation", "s3://lake/_chk/orders")
+      .toTable("bronze.orders"))
+  ```
+
+  `Trigger.AvailableNow` processes everything pending in rate-limited microbatches
+  and then shuts down, ideal for scheduled jobs on job clusters. SQL users get the
+  same with streaming tables: `CREATE OR REFRESH STREAMING TABLE ... AS SELECT *
+  FROM STREAM read_files(...)`, also usable inside Lakeflow Declarative Pipelines
+  (formerly DLT).
+
+  ## External systems
+
+  For enterprise applications and databases (Salesforce, SQL Server, Workday and
+  others) Databricks recommends Lakeflow Connect managed connectors, which handle
+  authentication, CDC, retries and schema evolution for you. Lakehouse Federation
+  queries external databases in place without ingesting. Plain JDBC reads remain
+  the fallback when no connector exists.
+exercises:
+  - type: mcq
+    prompt: A job runs the same COPY INTO statement every hour against a landing folder where old files are never removed. What happens to files loaded in earlier runs?
+    options:
+      - they are skipped, COPY INTO tracks loaded files and is idempotent
+      - they are reloaded and deduplicated by primary key
+      - they are reloaded unless PATTERN excludes them
+      - the statement fails because the files already exist in the table
+    answer: [0]
+    explanation: |
+      COPY INTO is retriable and idempotent, already loaded files are skipped on
+      subsequent runs unless force is set to true. Option 1 is wrong, Delta tables
+      have no primary key dedup on load. Option 2 is wrong, PATTERN filters which
+      files are considered but skipping loaded files happens regardless. Option 3
+      is wrong, reruns are the intended usage and never fail for that reason.
+  - type: fill_blank
+    prompt: Which COPY_OPTIONS key makes COPY INTO load files again even though they were loaded before?
+    answers: ["force", "'force'", "force=true", "'force' = 'true'"]
+    explanation: |
+      COPY_OPTIONS ('force' = 'true') disables the idempotency tracking so the
+      selected files load regardless of previous runs, typically combined with
+      FILES = (...) to reload a corrected subset.
+  - type: predict_output
+    prompt: orders_01.json was loaded by a previous run, orders_02.json is new. force is not set. What does this statement load?
+    code: |
+      COPY INTO sales.orders_bronze
+      FROM 's3://lake/landing/orders/'
+      FILEFORMAT = JSON
+      FILES = ('orders_01.json', 'orders_02.json')
+    code_lang: sql
+    options:
+      - only orders_02.json, the already loaded file is skipped
+      - both files, FILES overrides the load history
+      - nothing, FILES requires force to be set
+      - it fails because one of the listed files was already loaded
+    answer: [0]
+    explanation: |
+      Idempotency applies independently of how files are selected, the previously
+      loaded orders_01.json is skipped and only orders_02.json is ingested. FILES
+      only narrows the candidate set, it does not override history (option 1) and
+      it works without force (option 2). Listing an already loaded file is not an
+      error (option 3).
+  - type: mcq
+    prompt: A nightly job on a job cluster must ingest only new files, work off multi-day backlogs in controlled chunks, and let the cluster terminate afterwards. Which trigger fits?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/orders")
+          .load("s3://lake/landing/orders")
+          .writeStream
+          .trigger(???)
+          .option("checkpointLocation", "s3://lake/_chk/orders")
+          .toTable("bronze.orders"))
+    code_lang: python
+    options:
+      - trigger(availableNow=True), it drains everything pending in multiple rate-limited batches and then stops
+      - trigger(processingTime="24 hours"), one batch per day
+      - trigger(once=True), even though it forces the whole backlog into a single batch and is deprecated
+      - no trigger at all, the default keeps the stream running continuously
+    answer: [0]
+    explanation: |
+      Trigger.AvailableNow processes all data available at start, respects rate
+      limits like maxFilesPerTrigger by splitting into multiple batches, then shuts
+      down so the job cluster can terminate. processingTime keeps the cluster alive
+      around the clock waiting between batches. Trigger.Once is deprecated exactly
+      because it ignores rate limits and crams the backlog into one batch. The
+      default continuous trigger never stops, so the cluster never terminates.
+  - type: mcq
+    prompt: The integration team must replicate a SQL Server database into bronze tables with change data capture and as little custom code as possible. What does Databricks recommend first?
+    options:
+      - a Lakeflow Connect managed connector, it handles auth, CDC, retries and schema evolution
+      - a nightly JDBC full snapshot of every table
+      - Lakehouse Federation so the tables never have to be copied
+      - exporting tables to CSV in object storage and ingesting with Auto Loader
+    answer: [0]
+    explanation: |
+      Lakeflow Connect managed connectors are the recommended top layer for
+      enterprise applications and databases, CDC and operational concerns are
+      built in. JDBC full snapshots recopy unchanged data every night and capture
+      no deletes between runs. Federation queries data in place, the requirement
+      here is replication into bronze tables. The CSV export pipeline works but
+      means custom export tooling and hand-built CDC, the most maintenance of all
+      options.
+sources:
+  - https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/copy-into/
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/
+  - https://docs.databricks.com/aws/en/ingestion/

@@ -1,0 +1,146 @@
+id: d02-l02
+domain: 2
+order: 2
+title: Auto Loader file discovery, directory listing vs file notifications
+body: |
+  Auto Loader has to answer one question every microbatch: which files are new?
+  Two detection families exist, and picking the wrong one is a classic cost and
+  latency trap on large buckets.
+
+  ## Directory listing mode
+
+  The default. Auto Loader lists the input path and compares against the files it
+  has already tracked in the checkpoint (RocksDB state). It needs nothing beyond
+  read access to storage, which makes it the simplest start. The downside is that
+  every microbatch pays LIST API calls, on prefixes with millions of files that
+  gets slow and expensive. When files arrive in lexical order (for example
+  date-partitioned paths), incremental listing can cut the cost by only listing
+  beyond the last seen file.
+
+  ## File notification mode
+
+  Set `cloudFiles.useNotifications` to `true` and Auto Loader subscribes to cloud
+  events instead of listing: on AWS that means an SNS topic plus an SQS queue, on
+  Azure Event Grid plus a queue. New files push their own arrival, so discovery
+  cost no longer grows with directory size. Setup needs extra cloud permissions,
+  and each stream provisions its own notification resources.
+
+  ```python
+  df = (spark.readStream.format("cloudFiles")
+      .option("cloudFiles.format", "csv")
+      .option("cloudFiles.useNotifications", "true")
+      .option("cloudFiles.backfillInterval", "1 day")
+      .option("cloudFiles.schemaLocation", "s3://lake/_schemas/clicks")
+      .load("s3://lake/landing/clicks"))
+  ```
+
+  Cloud event delivery does not guarantee 100 percent of events arrive.
+  `cloudFiles.backfillInterval` triggers an asynchronous listing at the given
+  interval to catch files whose notifications were missed.
+
+  The newer variant is `cloudFiles.useManagedFileEvents`, which reads from the
+  Databricks file events service on a Unity Catalog external location, so many
+  streams share one event feed instead of each creating queues. Databricks
+  recommends file events based discovery as the more performant and scalable
+  option for large workloads.
+
+  ## Options that shape behavior
+
+  - `cloudFiles.includeExistingFiles` (default `true`): whether the first run also
+    processes files already sitting in the path or only files arriving afterwards.
+  - `cloudFiles.maxFilesPerTrigger` (default 1000) and
+    `cloudFiles.maxBytesPerTrigger`: cap how much one microbatch takes on, useful
+    to keep batch sizes predictable when working through a backlog.
+  - `cloudFiles.allowOverwrites` (default `false`): by default a file is processed
+    exactly once, if upstream overwrites the same file name the new content is
+    ignored. Setting it to `true` reprocesses changed files but can produce
+    duplicate rows downstream.
+  - `cloudFiles.maxFileAge`: how long file state is kept for deduplication, an
+    option for very high file volumes where checkpoint state grows large.
+
+  Regardless of mode, Auto Loader does not guarantee the order in which files are
+  discovered or processed, so design downstream logic for out of order arrival.
+exercises:
+  - type: mcq
+    prompt: A stream ingests from a prefix that has grown to roughly 40 million objects. Each microbatch now spends minutes on S3 LIST calls. What is the most direct fix?
+    options:
+      - enable file notification based discovery so new files are pushed via events instead of listed
+      - raise cloudFiles.maxFilesPerTrigger so fewer microbatches run
+      - set cloudFiles.includeExistingFiles to false
+      - shorten the trigger interval so each listing returns fewer new files
+    answer: [0]
+    explanation: |
+      File notification mode (cloudFiles.useNotifications or managed file events)
+      removes the per-batch listing, discovery cost stops growing with directory
+      size. Option 1 changes how many files one batch processes but every batch
+      still lists the whole prefix. Option 2 only affects the first run, the
+      ongoing listing cost stays. Option 3 makes things worse, listing happens more
+      often.
+  - type: fill_blank
+    prompt: In file notification mode, which cloudFiles option schedules periodic listings to catch files whose events were never delivered?
+    answers: ["cloudFiles.backfillInterval", "backfillInterval"]
+    explanation: |
+      cloudFiles.backfillInterval (for example "1 day") triggers asynchronous
+      backfill listings so eventual completeness holds even when the cloud event
+      service drops or delays notifications.
+  - type: predict_output
+    prompt: The landing path already contains 80,000 historical files when this stream starts for the first time. What does the first run do?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/events")
+          .load("s3://lake/landing/events"))
+    code_lang: python
+    options:
+      - it processes the 80,000 existing files too, because cloudFiles.includeExistingFiles defaults to true
+      - it only picks up files that arrive after the stream started
+      - it fails because more than maxFilesPerTrigger files are pending
+      - it processes existing files only if useNotifications is false
+    answer: [0]
+    explanation: |
+      cloudFiles.includeExistingFiles defaults to true, so the backlog is part of
+      the stream input, worked off in microbatches of up to maxFilesPerTrigger
+      (default 1000) files each. Option 1 describes includeExistingFiles set to
+      false. Option 2 is wrong, maxFilesPerTrigger caps a batch, it never fails the
+      stream. Option 3 is wrong, includeExistingFiles applies in both discovery
+      modes.
+  - type: spot_bug
+    prompt: A vendor overwrites yesterday's file daily_extract.csv in place with corrected numbers. The corrections never reach the bronze table even though the stream runs fine. Which assumption is wrong?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "csv")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/extract")
+          .load("s3://lake/landing/extract"))
+    code_lang: python
+    options:
+      - that Auto Loader reprocesses changed files, by default cloudFiles.allowOverwrites is false and an already seen file name is ignored
+      - that CSV supports overwrites, only JSON files are tracked for changes
+      - that the schema location tracks file versions, a second schemaLocation is needed
+      - that the stream is running, overwritten files always stop the stream
+    answer: [0]
+    explanation: |
+      Auto Loader tracks processed files in checkpoint state and processes each
+      file once, overwrites of a known file name are skipped unless
+      cloudFiles.allowOverwrites is true (which then risks duplicates and needs
+      dedup downstream, the cleaner fix is unique file names upstream). Option 1
+      invents a format difference that does not exist. Option 2 confuses schema
+      tracking with file tracking. Option 3 is wrong, overwrites are silently
+      ignored, nothing fails.
+  - type: mcq
+    prompt: After a weekend outage a stream restarts against a backlog of 30,000 small JSON files and the driver struggles with giant batches. Which pair of options bounds the work per microbatch?
+    options:
+      - cloudFiles.maxFilesPerTrigger and cloudFiles.maxBytesPerTrigger
+      - cloudFiles.maxFileAge and cloudFiles.backfillInterval
+      - cloudFiles.includeExistingFiles and cloudFiles.allowOverwrites
+      - spark.sql.shuffle.partitions and cloudFiles.schemaLocation
+    answer: [0]
+    explanation: |
+      maxFilesPerTrigger (default 1000) and maxBytesPerTrigger cap how many files
+      or bytes one trigger consumes, so the backlog drains in controlled batches.
+      maxFileAge controls dedup state retention and backfillInterval catches missed
+      notifications, neither sizes a batch. includeExistingFiles and allowOverwrites
+      control which files are eligible at all. Shuffle partitions tune processing
+      after read and schemaLocation stores schemas, neither limits intake.
+sources:
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/file-detection-modes
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options

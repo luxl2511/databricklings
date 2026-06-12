@@ -1,0 +1,152 @@
+id: d02-l01
+domain: 2
+order: 1
+title: Auto Loader schema inference, evolution and rescued data
+body: |
+  Auto Loader ingests files incrementally from cloud object storage through the
+  `cloudFiles` Structured Streaming source. Its biggest advantage over plain file
+  reads is how it handles schemas over time.
+
+  ## Schema inference
+
+  When you do not pass an explicit schema, Auto Loader samples the first 50 GB or
+  1000 files it discovers, whichever limit is hit first, and stores the result under
+  `cloudFiles.schemaLocation` in a `_schemas` directory. For JSON and CSV every
+  column is inferred as string unless you set `cloudFiles.inferColumnTypes` to
+  `true` (it defaults to `false`).
+
+  ```python
+  df = (spark.readStream.format("cloudFiles")
+      .option("cloudFiles.format", "json")
+      .option("cloudFiles.schemaLocation", "s3://lake/_schemas/orders")
+      .option("cloudFiles.inferColumnTypes", "true")
+      .load("s3://lake/landing/orders"))
+  ```
+
+  ## Schema hints
+
+  When you want inference for most columns but fixed types for a few, use
+  `cloudFiles.schemaHints` with SQL schema syntax:
+
+  ```python
+  .option("cloudFiles.schemaHints", "amount decimal(18,2), tags map<string,string>")
+  ```
+
+  Hints are only applied when you do not provide an explicit schema. With an
+  explicit schema they are ignored.
+
+  ## Schema evolution modes
+
+  `cloudFiles.schemaEvolutionMode` controls what happens when new columns show up:
+
+  - `addNewColumns`: the default when no schema is provided. The stream fails with
+    `UnknownFieldException`, but only after the schema location has been updated
+    with the new columns. On restart the stream picks up the evolved schema, so
+    Databricks recommends running Auto Loader in a Lakeflow Job with retries.
+  - `addNewColumnsWithTypeWidening`: like `addNewColumns`, but also widens types
+    such as int to long. Incompatible changes like int to string go to the rescued
+    data column instead.
+  - `rescue`: the schema never evolves and the stream never fails on schema
+    changes. New columns land in the rescued data column.
+  - `failOnNewColumns`: the stream fails and stays failed until the provided
+    schema is updated.
+  - `none`: the default when you provide a schema. New columns are ignored.
+
+  ## Rescued data
+
+  During inference Auto Loader adds a `_rescued_data` column (rename it with the
+  `rescuedDataColumn` option). Data that cannot be parsed into the schema lands
+  there as a JSON blob together with the source file path of the record. Three
+  things send a value to rescue: the column is missing from the schema, the type
+  does not match, or the casing does not match. This means a malformed field never
+  silently disappears, you can inspect and repair it later from the bronze table.
+exercises:
+  - type: mcq
+    prompt: An Auto Loader stream reads JSON files without an explicit schema and without extra options. What types does the inferred schema have?
+    options:
+      - every column is inferred as string, including nested JSON fields
+      - numeric and boolean types are inferred, only dates stay string
+      - the types from the first file win and later files must match
+      - inference fails and the stream requires an explicit schema
+    answer: [0]
+    explanation: |
+      cloudFiles.inferColumnTypes defaults to false, so for JSON and CSV Auto Loader
+      infers every column as string, including nested fields. Option 1 describes the
+      behavior with inferColumnTypes set to true, not the default. Option 2 is wrong
+      because inference samples up to the first 50 GB or 1000 files, not just one
+      file, and later mismatches go to the rescued data column rather than failing.
+      Option 3 is wrong because Auto Loader supports schema inference, an explicit
+      schema is optional.
+  - type: fill_blank
+    prompt: Name the cloudFiles option that controls how Auto Loader reacts when new columns appear in the source data.
+    answers: ["cloudFiles.schemaEvolutionMode", "schemaEvolutionMode"]
+    explanation: |
+      cloudFiles.schemaEvolutionMode selects between addNewColumns,
+      addNewColumnsWithTypeWidening, rescue, failOnNewColumns and none. The default
+      is addNewColumns when no schema is provided and none when you provide one.
+  - type: predict_output
+    prompt: This stream has been running with the default evolution mode and no explicit schema. A producer starts adding a new field "coupon_code" to the JSON records. What happens?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/orders")
+          .load("s3://lake/landing/orders")
+          .writeStream
+          .option("checkpointLocation", "s3://lake/_chk/orders")
+          .toTable("bronze.orders"))
+    code_lang: python
+    options:
+      - the stream fails with UnknownFieldException after writing the new column to the schema location, a restart resumes with the evolved schema
+      - the stream keeps running and coupon_code is silently dropped
+      - the stream keeps running and coupon_code lands in _rescued_data forever
+      - the stream fails and the checkpoint plus schema location must be deleted before it can run again
+    answer: [0]
+    explanation: |
+      Without a provided schema the default mode is addNewColumns. Auto Loader
+      updates the schema location with the new column first and then fails with
+      UnknownFieldException, so a simple restart (ideally automated through a
+      Lakeflow Job with retries) continues with the evolved schema. Option 1 is the
+      behavior of mode none with a provided schema. Option 2 describes rescue mode.
+      Option 3 is wrong, nothing has to be deleted, deleting the checkpoint would
+      actually cause a full reprocess.
+  - type: multi
+    prompt: Which schemaEvolutionMode values keep the stream running when a brand new column appears in the source? Select all that apply.
+    options:
+      - rescue
+      - none
+      - addNewColumns
+      - failOnNewColumns
+    answer: [0, 1]
+    explanation: |
+      rescue never evolves the schema and never fails, new columns are captured in
+      the rescued data column. none ignores new columns and also keeps running.
+      addNewColumns and addNewColumnsWithTypeWidening stop the stream with
+      UnknownFieldException so it restarts with the evolved schema, and
+      failOnNewColumns stops the stream until the provided schema itself is changed.
+  - type: spot_bug
+    prompt: A teammate wants to force the amount column to decimal while keeping inference for everything else. The hint never takes effect. Why?
+    code: |
+      df = (spark.readStream.format("cloudFiles")
+          .schema(order_schema)
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaHints", "amount decimal(18,2)")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/orders")
+          .load("s3://lake/landing/orders"))
+    code_lang: python
+    options:
+      - schema hints are only applied when no explicit schema is passed, .schema(order_schema) makes the hint a no-op
+      - decimal types are not allowed in schema hints
+      - cloudFiles.schemaHints must be set before cloudFiles.format
+      - schemaLocation and schemaHints cannot be combined
+    answer: [0]
+    explanation: |
+      Auto Loader uses schema hints only if you do not provide a schema. Because
+      .schema(order_schema) supplies one, the hint is ignored, fix it by dropping
+      the explicit schema or by putting the decimal type into order_schema directly.
+      Option 1 is wrong, hints accept SQL schema syntax including decimal, maps,
+      arrays and nested fields. Option 2 is wrong, option order does not matter.
+      Option 3 is wrong, schemaLocation plus schemaHints is the normal combination
+      for inference workloads.
+sources:
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options

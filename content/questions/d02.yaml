@@ -1,0 +1,557 @@
+questions:
+  - id: d02-q001
+    domain: 2
+    subtopic: schema-inference
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      A data engineer ingests JSON click events with Auto Loader into a bronze
+      table. No explicit schema is passed. After the first run every column in the
+      bronze table, including numeric fields like duration_ms, has type string.
+      What explains this?
+    code: |
+      df = (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/clicks")
+          .load("s3://lake/landing/clicks"))
+    code_lang: python
+    options:
+      - cloudFiles.inferColumnTypes defaults to false, so JSON columns are inferred as string unless it is enabled
+      - JSON carries no type information, so Auto Loader can never infer non-string types
+      - cloudFiles.schemaEvolutionMode defaults to none, which downgrades all types to string
+      - the schema location was created by an older run and pins everything to string
+    answer: [0]
+    explanation: |
+      For JSON and CSV Auto Loader infers all columns as string by default,
+      setting cloudFiles.inferColumnTypes to true switches to Spark-style type
+      inference from sampled data. The second option is wrong because exactly that
+      option exists to infer ints, doubles, booleans and so on from JSON values.
+      The third option mixes up concerns, schemaEvolutionMode controls how new
+      columns are handled (and its default without a schema is addNewColumns, not
+      none), it does not affect type inference. The fourth option is a red herring,
+      the schema location stores whatever was inferred, the string types come from
+      the inference default, not from the storage.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q002
+    domain: 2
+    subtopic: schema-evolution
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      An Auto Loader stream running with default options and no explicit schema
+      has been stable for weeks. Overnight the upstream team added a new field
+      "loyalty_tier" to the JSON payload and the stream stopped with
+      UnknownFieldException. What is the correct understanding of the situation?
+    options:
+      - Auto Loader already wrote the new column to the schema location before failing, restarting the stream resumes with the evolved schema, so the stream should run in a Lakeflow Job with retries
+      - the checkpoint and schema location are now inconsistent and both must be deleted before the stream can start again
+      - the failure means the schema location is read-only, the engineer must edit the stored schema by hand and then restart
+      - the stream cannot be restarted until cloudFiles.schemaHints lists the new column
+    answer: [0]
+    explanation: |
+      In the default addNewColumns mode Auto Loader performs inference on the
+      failing microbatch, updates the schema location with the new columns, and
+      only then stops with UnknownFieldException. A restart picks up the evolved
+      schema, which is why Databricks recommends running such streams in Lakeflow
+      Jobs with automatic retries. Deleting the checkpoint would throw away file
+      tracking state and reprocess everything, nothing is inconsistent. The schema
+      location is updated automatically, no manual edit is needed or expected.
+      Schema hints are for pinning types during inference, they are not a
+      precondition for restarting after evolution.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q003
+    domain: 2
+    subtopic: schema-evolution
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      An SLA-critical ingestion stream must never stop because of schema drift,
+      but compliance requires that unexpected new fields are retained somewhere
+      queryable for audit. The bronze table schema itself must stay fixed. Which
+      cloudFiles.schemaEvolutionMode satisfies both requirements?
+    options:
+      - rescue
+      - none
+      - addNewColumns
+      - failOnNewColumns
+      - addNewColumnsWithTypeWidening
+    answer: [0]
+    explanation: |
+      rescue keeps the schema frozen, never fails the stream on schema changes,
+      and records all new columns in the rescued data column where auditors can
+      query them. none also keeps the stream alive but simply ignores new columns,
+      so the audit requirement fails. addNewColumns and
+      addNewColumnsWithTypeWidening stop the stream with UnknownFieldException and
+      evolve the bronze schema, violating both the no-stop and the fixed-schema
+      requirement. failOnNewColumns stops the stream and stays stopped until the
+      provided schema is changed, the worst fit here.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q004
+    domain: 2
+    subtopic: schema-evolution
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      A source system migration changes two columns in the incoming Parquet data.
+      quantity goes from int to long, and sku goes from int to string. The stream
+      runs with cloudFiles.schemaEvolutionMode set to
+      addNewColumnsWithTypeWidening and a rescued data column configured. How does
+      Auto Loader handle the two changes?
+    options:
+      - quantity is widened to long in the schema, while the int to string change for sku is not widened and those values land in the rescued data column
+      - both columns are widened automatically because string can hold any int value
+      - both changes go to the rescued data column because widening only applies to brand new columns
+      - the stream fails permanently because type changes are never allowed for existing columns
+    answer: [0]
+    explanation: |
+      addNewColumnsWithTypeWidening behaves like addNewColumns and additionally
+      widens supported type changes such as int to long. Conversions that are not
+      eligible for widening, like int to string, are placed in the rescued data
+      column instead. The second option sounds intuitive but int to string is
+      exactly the documented example of an incompatible change that is rescued,
+      not widened. The third option is wrong because widening applies to type
+      changes of existing columns, that is its purpose. The fourth option is
+      wrong, the mode exists precisely to survive compatible type changes, and
+      even incompatible ones do not permanently fail the stream, they are rescued.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q005
+    domain: 2
+    subtopic: copy-into
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      A scheduled query runs this statement every night. The vendor never deletes
+      old files from the landing folder. After a month the team worries the table
+      contains each file thirty times. Is the worry justified?
+    code: |
+      COPY INTO finance.invoices_bronze
+      FROM 's3://lake/landing/invoices/'
+      FILEFORMAT = CSV
+      FORMAT_OPTIONS ('header' = 'true')
+    code_lang: sql
+    options:
+      - no, COPY INTO is idempotent and skips files that were already loaded on previous runs
+      - yes, every run reloads the whole folder unless PATTERN restricts it to new dates
+      - yes, idempotency only applies when COPY_OPTIONS ('force' = 'false') is set explicitly
+      - no, but only because CSV files are deduplicated row by row during load
+    answer: [0]
+    explanation: |
+      COPY INTO tracks which files have been loaded into the target table and
+      skips them on subsequent runs, rerunning the identical statement nightly is
+      the intended usage and produces no duplicates. PATTERN filters candidate
+      files but is not what prevents duplicates. force defaults to false, no
+      explicit setting is needed for idempotent behavior. There is no row-level
+      deduplication in COPY INTO, the skipping happens at file level.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into
+  - id: d02-q006
+    domain: 2
+    subtopic: copy-into
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A vendor re-delivered two corrected files with unchanged file names after a
+      pricing bug. The files were already loaded into sales.orders_bronze by a
+      nightly COPY INTO job. The team deleted the affected rows from the table and
+      now needs to load exactly these two files again. Which statement achieves
+      that?
+    options:
+      - COPY INTO with FILES naming the two files and COPY_OPTIONS ('force' = 'true')
+      - rerun the regular nightly COPY INTO, the changed file content is detected automatically
+      - COPY INTO with PATTERN matching the two file names, force is unnecessary when PATTERN is used
+      - COPY INTO with VALIDATE ALL to refresh the load history before loading
+      - drop and recreate the table, then rerun the nightly COPY INTO once
+    answer: [0]
+    explanation: |
+      force set to true disables the load history check, and FILES pins the
+      operation to exactly the two re-delivered files, this is the documented
+      pattern for reloading a subset. The plain rerun skips the files because the
+      names are already in the load history, content changes do not matter.
+      PATTERN only narrows the candidate set, idempotency still skips already
+      loaded names, so nothing loads. VALIDATE checks data without writing
+      anything and has no effect on load history. Dropping the table works but
+      reloads the entire history, far more compute and risk than reloading two
+      files.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into
+  - id: d02-q007
+    domain: 2
+    subtopic: auto-loader-vs-copy-into
+    difficulty: medium
+    type: multi_select
+    stem: |
+      A team currently loads IoT sensor drops with a scheduled COPY INTO. Volume
+      is forecast to grow from a few hundred files per day to tens of thousands
+      per hour, and device firmware updates keep adding new measurement fields.
+      Which two characteristics of this workload favor switching to Auto Loader?
+      Select two.
+    options:
+      - file counts heading into the millions over time, where Auto Loader needs fewer discovery operations and is cheaper at scale
+      - frequent schema drift, where Auto Loader offers evolution modes and a rescued data column
+      - the occasional need to reload a small named subset of files
+      - the team prefers writing plain SQL statements
+      - the data arrives as CSV and JSON
+    answer: [0, 1]
+    explanation: |
+      The Databricks guidance is to use Auto Loader when expecting files in the
+      order of millions or more over time, it discovers files more cheaply and
+      splits processing into batches, and to prefer it when the schema evolves
+      frequently thanks to schemaEvolutionMode and rescued data. Reloading a named
+      subset is the case where COPY INTO is easier, not Auto Loader, the docs even
+      suggest running COPY INTO for the subset next to a running stream. SQL
+      preference does not force COPY INTO either way since streaming tables expose
+      Auto Loader through SQL. File format is neutral, both tools read CSV and
+      JSON.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/
+  - id: d02-q008
+    domain: 2
+    subtopic: copy-into
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      Weekly JSON exports from a CRM gain new attributes every few releases. The
+      team pre-created an empty Delta table and loads with the statement below.
+      Last week the load failed because the files contained a column the table
+      does not have. What is the smallest change so future loads absorb new
+      columns into the table schema?
+    code: |
+      COPY INTO crm.contacts_bronze
+      FROM 's3://lake/landing/contacts/'
+      FILEFORMAT = JSON
+      FORMAT_OPTIONS ('multiLine' = 'true')
+    code_lang: sql
+    options:
+      - add COPY_OPTIONS ('mergeSchema' = 'true')
+      - add COPY_OPTIONS ('force' = 'true')
+      - add VALIDATE ALL before the FORMAT_OPTIONS clause
+      - recreate the table from scratch before every weekly load
+      - switch FILEFORMAT to PARQUET so schemas merge automatically
+    answer: [0]
+    explanation: |
+      mergeSchema in COPY_OPTIONS lets the target table schema evolve to
+      accommodate new columns in the incoming data, which is the documented way to
+      handle drifting sources with COPY INTO. force only disables the
+      already-loaded file skipping, it does nothing about schema mismatches.
+      VALIDATE checks data without persisting and would not make the subsequent
+      load succeed. Recreating the table weekly works but throws away history and
+      table properties, a heavy workaround for a one-line option. Changing the
+      file format does not change schema evolution behavior and the source files
+      are JSON anyway.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/copy-into/
+  - id: d02-q009
+    domain: 2
+    subtopic: file-discovery
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      An Auto Loader stream in directory listing mode reads from a bucket prefix
+      with millions of accumulated objects. Microbatch latency is dominated by
+      LIST API calls and the cloud bill shows growing request costs. Which option
+      switches the stream to event-driven file discovery?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "json")
+          .option("cloudFiles.schemaLocation", "s3://lake/_schemas/telemetry")
+          .load("s3://lake/landing/telemetry"))
+    code_lang: python
+    options:
+      - .option("cloudFiles.useNotifications", "true")
+      - .option("cloudFiles.useIncrementalListing", "true")
+      - .option("cloudFiles.backfillInterval", "1 hour")
+      - .option("cloudFiles.maxFilesPerTrigger", "10000")
+    answer: [0]
+    explanation: |
+      cloudFiles.useNotifications set to true enables file notification mode,
+      Auto Loader subscribes to cloud storage events (SNS/SQS on AWS) and no
+      longer lists the prefix per batch. Incremental listing still lists, it just
+      tries to list only beyond the last seen lexically ordered file, helpful but
+      still listing based. backfillInterval is a completeness safety net used
+      together with notifications, it does not switch the discovery mode.
+      maxFilesPerTrigger changes how many discovered files one batch processes and
+      has no effect on discovery cost.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/file-detection-modes
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options
+  - id: d02-q010
+    domain: 2
+    subtopic: file-discovery
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A regulated pipeline runs Auto Loader in file notification mode. An audit
+      finds three files from last quarter that never made it into the bronze
+      table, the cloud provider confirms the notification events were dropped.
+      Which option prevents this class of gap going forward?
+    options:
+      - set cloudFiles.backfillInterval so Auto Loader periodically lists the source and picks up files whose events were missed
+      - set cloudFiles.allowOverwrites to true so changed and missed files are reconsidered
+      - lower cloudFiles.maxFileAge so the dedup state resets and files are rediscovered
+      - set cloudFiles.includeExistingFiles to true on the running stream
+    answer: [0]
+    explanation: |
+      Cloud event services do not guarantee delivery of every notification, so
+      Databricks provides cloudFiles.backfillInterval to trigger asynchronous
+      backfill listings (for example once a day) that guarantee all files are
+      eventually processed. allowOverwrites is about reprocessing files whose
+      content changed under a known name, it does not discover files that were
+      never seen. Shrinking maxFileAge is dangerous, it expires tracking state and
+      can cause duplicate processing, and it still does not actively look for
+      missed files. includeExistingFiles already defaults to true and only matters
+      for what the first run of a new stream picks up.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/file-detection-modes
+  - id: d02-q011
+    domain: 2
+    subtopic: file-discovery
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      A platform team runs forty Auto Loader streams against paths under the same
+      Unity Catalog external location. With classic file notification mode each
+      stream provisions its own queue and event subscription, and the cloud team
+      complains about resource sprawl. The streams should keep event-driven
+      discovery. What is the recommended setup?
+    options:
+      - enable file events on the external location and set cloudFiles.useManagedFileEvents to true so all streams share the Databricks-managed event feed
+      - keep cloudFiles.useNotifications and point all forty streams at one manually created SQS queue
+      - switch everything back to directory listing with cloudFiles.useIncrementalListing
+      - replace the forty streams with one stream on the bucket root and split downstream by path
+    answer: [0]
+    explanation: |
+      Managed file events move event handling into the Databricks file events
+      service on the Unity Catalog external location, streams opt in with
+      cloudFiles.useManagedFileEvents and no longer create per-stream cloud
+      resources, this is the recommended modern notification setup. Sharing one
+      hand-built queue across streams breaks Auto Loader's expectation of owning
+      its queue and risks streams stealing each other's events. Falling back to
+      directory listing gives up event-driven discovery and reintroduces listing
+      cost at this scale. One mega-stream on the bucket root creates a schema and
+      checkpoint coupling nightmare across unrelated datasets and still does not
+      reduce the notification machinery for distinct consumers.
+    verify: true
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/file-detection-modes
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options
+  - id: d02-q012
+    domain: 2
+    subtopic: rescued-data
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      An Auto Loader stream infers its schema from JSON files. One producer sends
+      records where the column appears as "Amount" instead of "amount" and another
+      sends "amount" as a quoted string where the schema expects a double. What
+      happens to these values?
+    options:
+      - they are captured in the _rescued_data column as a JSON blob that also records the source file path
+      - they are silently dropped and only visible in driver logs
+      - the affected columns become null with no way to recover the original values
+      - the stream fails until the producers fix casing and types
+    answer: [0]
+    explanation: |
+      Case mismatches and type mismatches are two of the three triggers for data
+      rescue (the third is a column missing from the schema). The values land in
+      the rescued data column, by default _rescued_data and renamable via the
+      rescuedDataColumn option, as a JSON blob including the record's source file
+      path, so nothing is lost. They are not dropped and not reduced to
+      unrecoverable nulls, recovery from the rescue column is the whole point.
+      The stream keeps running, mismatched values are not a schema evolution event
+      and cause no failure.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q013
+    domain: 2
+    subtopic: schema-inference
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A bronze ingestion stream should keep schema inference for several dozen
+      frequently changing JSON attributes, but the finance team requires that
+      amount is always decimal(18,2) and booked_at is always timestamp, regardless
+      of what inference would pick. Which approach meets the requirement with the
+      least maintenance?
+    options:
+      - keep inference and set cloudFiles.schemaHints to "amount decimal(18,2), booked_at timestamp"
+      - define the full schema explicitly with .schema() and update it whenever attributes change
+      - set cloudFiles.inferColumnTypes to true so the correct types are inferred
+      - leave everything as string in bronze and cast in the silver layer
+    answer: [0]
+    explanation: |
+      Schema hints exist exactly for this, they enforce types for named columns
+      while inference continues to manage the rest, no maintenance when unrelated
+      attributes change. A full explicit schema works but every new attribute now
+      requires a code change, the opposite of least maintenance, and it also
+      disables hints. inferColumnTypes gives inferred types, not guaranteed ones,
+      a column full of integer-looking amounts could come out as long instead of
+      decimal(18,2). Casting in silver leaves bronze typed wrong and pushes the
+      requirement downstream instead of meeting it at ingestion.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/schema
+  - id: d02-q014
+    domain: 2
+    subtopic: ingestion-patterns
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      An ingestion job runs once per night on a job cluster that terminates after
+      the run. It must process only files that arrived since the last run, survive
+      multi-day backlogs after outages without overwhelming the driver, and the
+      source grows by hundreds of thousands of files per month. Which pattern
+      fits?
+    options:
+      - Auto Loader with writeStream trigger availableNow=True, so pending files are processed in rate-limited microbatches and the query stops when caught up
+      - a continuously running Auto Loader stream on an all-purpose cluster
+      - a nightly spark.read over the full landing path followed by an overwrite of the bronze table
+      - Auto Loader with trigger(once=True) so the nightly run is a single batch
+    answer: [0]
+    explanation: |
+      Trigger.AvailableNow processes everything available at query start, respects
+      rate limits such as maxFilesPerTrigger so backlogs drain in controlled
+      microbatches, and then shuts down, exactly the scheduled incremental batch
+      pattern. A continuous stream works functionally but keeps a cluster running
+      around the clock for a nightly requirement, pure cost. The full nightly
+      spark.read reprocesses every file ever landed and gets slower and more
+      expensive each month. Trigger.Once is deprecated because it ignores rate
+      limiting and forces the entire backlog into one batch, the exact
+      driver-overwhelm scenario the team wants to avoid.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/
+  - id: d02-q015
+    domain: 2
+    subtopic: ingestion-patterns
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A team of SQL analysts working in Databricks SQL needs incremental ingestion
+      of JSON files from a Unity Catalog volume into a managed table. Volume will
+      reach millions of files. They want the most managed experience and no Python.
+      Which approach does Databricks recommend?
+    code: |
+      CREATE OR REFRESH STREAMING TABLE raw_invoices
+      AS SELECT * FROM STREAM read_files(
+        '/Volumes/finance/landing/invoices',
+        format => 'json'
+      )
+    code_lang: sql
+    options:
+      - a streaming table over STREAM read_files, which runs Auto Loader under the hood with SQL only
+      - a scheduled COPY INTO statement, since SQL users cannot use Auto Loader
+      - an external table created directly over the landing directory
+      - a notebook with spark.readStream.format("cloudFiles") scheduled as a job
+    answer: [0]
+    explanation: |
+      Streaming tables are the recommended path for SQL users, CREATE OR REFRESH
+      STREAMING TABLE with STREAM read_files gives Auto Loader incremental
+      ingestion with the most managed experience, and the same construct works in
+      Lakeflow Declarative Pipelines. COPY INTO is valid SQL but at millions of
+      files Databricks explicitly recommends the more scalable streaming table,
+      and the claim that SQL users cannot use Auto Loader is false. An external
+      table over the landing directory ingests nothing, every query rescans raw
+      JSON and there is no Delta bronze table. The cloudFiles notebook works but
+      is Python, which the team excluded, and is the least managed of the working
+      options.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/copy-into/
+      - https://docs.databricks.com/aws/en/ingestion/
+  - id: d02-q016
+    domain: 2
+    subtopic: external-systems
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A company needs Salesforce objects replicated into Unity Catalog bronze
+      tables with incremental updates several times a day. The team has no
+      capacity to maintain API integration code, handle Salesforce API version
+      bumps, or build retry logic. Which ingestion approach does Databricks
+      recommend?
+    options:
+      - the Lakeflow Connect managed Salesforce connector, which handles authentication, CDC, retries and schema evolution
+      - a Python job calling the Salesforce REST API and writing Parquet to a volume for Auto Loader
+      - Lakehouse Federation against Salesforce so no replication is needed
+      - a third-party export of Salesforce data to CSV in S3, loaded nightly with COPY INTO
+    answer: [0]
+    explanation: |
+      Lakeflow Connect managed connectors are the recommended highest automation
+      layer for enterprise applications like Salesforce, exactly because they own
+      source-specific authentication, CDC, edge cases, API maintenance, retries
+      and schema evolution. The hand-rolled REST job is precisely the integration
+      and maintenance burden the team cannot carry. Federation queries sources in
+      place, the requirement is replicated bronze tables with incremental updates,
+      and live federated queries against API-fronted SaaS data do not deliver
+      that. The third-party CSV export adds a vendor, loses type fidelity through
+      CSV, and nightly COPY INTO misses the several times a day freshness
+      requirement.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/
+  - id: d02-q017
+    domain: 2
+    subtopic: copy-into
+    difficulty: hard
+    type: multi_select
+    stem: |
+      A data engineer is designing a COPY INTO based ingestion job and reviews the
+      statement's guarantees and limits. Which of the following statements about
+      COPY INTO are correct? Select all that apply.
+    options:
+      - the target table must exist before the command runs, COPY INTO does not create it
+      - the FILES clause can name at most 1000 explicit files
+      - already loaded files are skipped on reruns unless COPY_OPTIONS ('force' = 'true') is set
+      - FILES and PATTERN can be combined to further narrow the selection
+      - COPY INTO subscribes to cloud file notifications to discover new files
+    answer: [0, 1, 2]
+    explanation: |
+      The first three are documented behavior, the target table is a precondition
+      (pre-create an empty Delta table, optionally with mergeSchema for schemaless
+      ingestion), FILES is capped at 1000 names, and idempotent file skipping is
+      the default until force disables it. FILES and PATTERN are mutually
+      exclusive selection mechanisms, you use one or the other, never both in one
+      statement. File notifications are an Auto Loader discovery feature, COPY
+      INTO discovers candidates by listing the source location on each run, which
+      is one reason Auto Loader scales better into millions of files.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into
+  - id: d02-q018
+    domain: 2
+    subtopic: file-discovery
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      A partner uploads positions.csv once per day, always under the same name,
+      overwriting yesterday's file with a fresh full extract. The partner cannot
+      change this naming. An Auto Loader stream ingested the file on day one and
+      has ignored every overwrite since. The team needs each daily version
+      ingested. What should they do?
+    code: |
+      (spark.readStream.format("cloudFiles")
+          .option("cloudFiles.format", "csv")
+          .option("cloudFiles.schemaLocation", "abfss://lake@corp.dfs.core.windows.net/_schemas/positions")
+          .load("abfss://landing@corp.dfs.core.windows.net/positions"))
+    code_lang: python
+    options:
+      - set cloudFiles.allowOverwrites to true and add deduplication downstream, since reprocessed files can introduce duplicate rows
+      - set cloudFiles.backfillInterval to "1 day" so the daily listing rediscovers the file
+      - set cloudFiles.includeExistingFiles to true so existing files are re-read on every trigger
+      - delete the checkpoint directory each night before the run so the file looks new again
+    answer: [0]
+    explanation: |
+      cloudFiles.allowOverwrites defaults to false, a file name that is already in
+      the tracking state is processed exactly once and overwrites are ignored.
+      Setting it to true makes Auto Loader reprocess modified files, with the
+      documented caveat that duplicates can occur, so downstream dedup or a
+      replace-by-day pattern is needed. backfillInterval finds files whose
+      notification events were missed, the file here was discovered and processed,
+      it is tracked, so backfills will not reprocess it. includeExistingFiles only
+      controls what the very first run of a stream picks up, it never re-reads
+      tracked files per trigger. Deleting the checkpoint nightly destroys all file
+      tracking and offset state, forces schema and history rebuilds, and turns the
+      stream into an accidental full reload, not a fix.
+    sources:
+      - https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/options
