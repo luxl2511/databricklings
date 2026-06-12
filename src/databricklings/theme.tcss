@@ -1,0 +1,178 @@
+/* tokyonight-ish palette, dark and restrained */
+
+Screen {
+    background: #1a1b26;
+    color: #c0caf5;
+}
+
+#logo {
+    color: #7aa2f7;
+    text-style: bold;
+    width: auto;
+    margin: 1 0 0 0;
+}
+
+#tagline {
+    color: #565f89;
+    margin: 0 0 1 0;
+}
+
+.menu-line {
+    color: #c0caf5;
+}
+
+.menu-key {
+    color: #e0af68;
+    text-style: bold;
+}
+
+.dim {
+    color: #565f89;
+}
+
+#dashboard {
+    align: center middle;
+}
+
+#dashboard Vertical {
+    width: auto;
+    height: auto;
+}
+
+StatusBar {
+    dock: bottom;
+    height: 2;
+    background: #16161e;
+    color: #565f89;
+    padding: 0 1;
+}
+
+.panel {
+    border: round #3b4261;
+    padding: 1 2;
+    margin: 0 1;
+}
+
+.title {
+    color: #7aa2f7;
+    text-style: bold;
+}
+
+Tree {
+    background: #1a1b26;
+    color: #c0caf5;
+    padding: 0 1;
+}
+
+Tree > .tree--cursor {
+    background: #2f334d;
+    color: #c0caf5;
+    text-style: bold;
+}
+
+Tree > .tree--guides {
+    color: #3b4261;
+}
+
+#lesson-body {
+    padding: 0 2;
+}
+
+#quiz-scroll {
+    padding: 0 2;
+}
+
+.q-header {
+    color: #565f89;
+    margin: 1 0 0 0;
+}
+
+.q-stem {
+    margin: 1 0;
+}
+
+.q-options {
+    margin: 0 0 1 0;
+}
+
+.q-feedback-ok {
+    border: round #9ece6a;
+    color: #9ece6a;
+    padding: 1 2;
+    margin: 1 0;
+}
+
+.q-feedback-bad {
+    border: round #f7768e;
+    padding: 1 2;
+    margin: 1 0;
+}
+
+#fill-input {
+    margin: 1 0;
+    background: #24283b;
+    border: tall #3b4261;
+}
+
+#fill-input:focus {
+    border: tall #7aa2f7;
+}
+
+WhichKeyModal {
+    align: center bottom;
+}
+
+#whichkey {
+    background: #16161e;
+    border: round #3b4261;
+    padding: 1 2;
+    width: 60;
+    height: auto;
+    margin: 0 0 3 0;
+}
+
+CheatsheetModal, ConfirmModal, FuzzyModal {
+    align: center middle;
+}
+
+#cheatsheet {
+    background: #16161e;
+    border: round #3b4261;
+    padding: 1 2;
+    width: 72;
+    height: 80%;
+}
+
+#confirm-box {
+    background: #16161e;
+    border: round #e0af68;
+    padding: 1 2;
+    width: 56;
+    height: auto;
+}
+
+#fuzzy-box {
+    background: #16161e;
+    border: round #3b4261;
+    padding: 1 2;
+    width: 70;
+    height: 60%;
+}
+
+#fuzzy-input {
+    background: #24283b;
+    border: tall #3b4261;
+}
+
+#fuzzy-input:focus {
+    border: tall #7aa2f7;
+}
+
+#fuzzy-list {
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+.bar-label {
+    color: #c0caf5;
+}
