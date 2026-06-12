@@ -1,0 +1,31 @@
+[project]
+name = "databricklings"
+version = "0.1.0"
+description = "Unofficial terminal study app for the Databricks Certified Data Engineer Professional exam. Not affiliated with Databricks, Inc."
+readme = "README.md"
+authors = [
+    { name = "Lukas Lux", email = "lukas.lux@ckl.de" }
+]
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+    "textual>=8.2.7",
+]
+
+[project.scripts]
+databricklings = "databricklings.app:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

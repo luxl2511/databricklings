@@ -1,0 +1,41 @@
+domains:
+  - id: 1
+    key: develop
+    name: Developing Code for Data Processing using Python and SQL
+    weight: 22
+  - id: 2
+    key: ingest
+    name: Data Ingestion & Acquisition
+    weight: 7
+  - id: 3
+    key: transform
+    name: Data Transformation, Cleansing, and Quality
+    weight: 10
+  - id: 4
+    key: share
+    name: Data Sharing and Federation
+    weight: 5
+  - id: 5
+    key: monitor
+    name: Monitoring and Alerting
+    weight: 10
+  - id: 6
+    key: optimize
+    name: Cost & Performance Optimization
+    weight: 13
+  - id: 7
+    key: secure
+    name: Ensuring Data Security and Compliance
+    weight: 10
+  - id: 8
+    key: govern
+    name: Data Governance
+    weight: 7
+  - id: 9
+    key: deploy
+    name: Debugging and Deploying
+    weight: 10
+  - id: 10
+    key: model
+    name: Data Modelling
+    weight: 6
