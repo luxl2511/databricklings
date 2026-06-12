@@ -1,0 +1,153 @@
+id: d04-l01
+domain: 4
+order: 1
+title: Delta Sharing, shares and recipients
+body: |
+  Delta Sharing is the open protocol for sharing live data out of a Unity Catalog
+  metastore without copying it. There are two flavors and the exam expects you to
+  pick the right one from a scenario.
+
+  ## Open sharing vs Databricks-to-Databricks
+
+  Open sharing targets recipients on any platform: pandas, Power BI, Apache Spark,
+  or anything that speaks the Delta Sharing protocol. The provider creates a
+  token-based recipient, sends an activation link, and the recipient downloads a
+  credential file with a bearer token. Open sharing is limited to tabular data;
+  views, streaming tables and materialized views are only available to open
+  recipients through provider-side materialization.
+
+  Databricks-to-Databricks (D2D) sharing connects two Unity Catalog metastores,
+  even across accounts and clouds. No tokens are exchanged. The recipient runs
+  `current_metastore()` and gives the provider that sharing identifier. D2D
+  supports far more object types: tables, views, dynamic views, streaming tables,
+  materialized views, volumes, notebooks, AI models and Python UDFs.
+
+  ## Creating a share
+
+  A share is a named, read-only collection of objects, a securable in the
+  metastore:
+
+  ```sql
+  CREATE SHARE IF NOT EXISTS finance_share
+    COMMENT 'Curated finance tables for partners';
+
+  ALTER SHARE finance_share ADD TABLE sales.orders;
+
+  ALTER SHARE finance_share
+    ADD TABLE sales.transactions
+    PARTITION (region = CURRENT_RECIPIENT().region)
+    AS shared_transactions
+    WITH HISTORY;
+  ```
+
+  `AS` renames the object inside the share, `PARTITION` restricts which partitions
+  a recipient sees, and `CURRENT_RECIPIENT().region` resolves a property set on
+  each recipient, so one share can serve many recipients with different slices.
+  `WITH HISTORY` shares the table history too, which is what enables time travel
+  queries and streaming reads on the shared table.
+
+  ## Recipients and grants
+
+  ```sql
+  -- open sharing, token based
+  CREATE RECIPIENT acme_corp
+    PROPERTIES (region = 'EMEA');
+
+  -- Databricks-to-Databricks
+  CREATE RECIPIENT contoso
+    USING ID 'azure:westeurope:f12dcb34-5678-9d4c-1234-c5ac67f8b90a';
+
+  GRANT SELECT ON SHARE finance_share TO RECIPIENT acme_corp;
+  ```
+
+  Omitting `USING ID` makes a token recipient. `DESCRIBE RECIPIENT acme_corp`
+  returns the activation link and token expiration. The only privilege a
+  recipient can hold on a share is `SELECT`; shared data is always read-only for
+  the recipient.
+exercises:
+  - type: mcq
+    prompt: >
+      A partner company runs its analytics on Snowflake and plain Python, no
+      Databricks anywhere. They need read access to two Delta tables you manage
+      in Unity Catalog. Which recipient setup is correct?
+    options:
+      - Create a token-based recipient without USING ID and send them the activation link
+      - Create a recipient with USING ID set to their Snowflake account locator
+      - Ask them to create a Unity Catalog metastore first, then use D2D sharing
+      - Export the tables to parquet in cloud storage and grant them bucket access
+    answer: [0]
+    explanation: |
+      Without a Databricks workspace the partner cannot do D2D sharing, so a
+      token-based recipient (no USING ID) is the way: they activate the link,
+      download the credential file and query with any Delta Sharing connector.
+      USING ID expects a Databricks sharing identifier from current_metastore(),
+      not a Snowflake locator. Forcing them onto a metastore defeats the point of
+      the open protocol. A parquet export is a stale copy, not live sharing.
+  - type: fill_blank
+    prompt: >
+      For Databricks-to-Databricks sharing, which SQL function does the recipient
+      run in their own workspace to obtain the sharing identifier the provider
+      needs for CREATE RECIPIENT ... USING ID?
+    answers: ["current_metastore()", "current_metastore", "select current_metastore()"]
+    explanation: |
+      current_metastore() returns the sharing identifier in the format
+      cloud:region:metastore-uuid. The provider plugs that string into
+      CREATE RECIPIENT ... USING ID and no tokens are ever exchanged.
+  - type: spot_bug
+    prompt: A colleague wrote this to share a table with a partner. The share and recipient get created, but the partner sees nothing. What is wrong?
+    code: |
+      CREATE SHARE finance_share;
+      ALTER SHARE finance_share ADD TABLE sales.orders;
+      CREATE RECIPIENT acme_corp;
+      GRANT USE ON SHARE finance_share TO RECIPIENT acme_corp;
+    code_lang: sql
+    options:
+      - The grant must be SELECT, the only privilege a recipient can hold on a share
+      - ADD TABLE is invalid, tables must be added at CREATE SHARE time
+      - CREATE RECIPIENT requires a PROPERTIES clause
+      - The share must be granted to a group, not directly to a recipient
+    answer: [0]
+    explanation: |
+      Recipients are granted SELECT on a share, nothing else, so GRANT USE fails.
+      ADD TABLE via ALTER SHARE is exactly how content gets into a share, CREATE
+      SHARE itself takes no object list. PROPERTIES is optional and only needed
+      for things like partition filtering with CURRENT_RECIPIENT(). Shares are
+      granted to recipients directly, recipients are not principals in groups.
+  - type: mcq
+    prompt: >
+      A D2D recipient wants to run a streaming read against a table you share and
+      occasionally query it with time travel. What must you change on the
+      provider side?
+    options:
+      - Re-add the table to the share using WITH HISTORY
+      - Grant the recipient MODIFY on the share
+      - Add the table's schema to the share instead of the single table
+      - Enable change data feed on the recipient's catalog
+    answer: [0]
+    explanation: |
+      WITH HISTORY shares the table history along with the current snapshot,
+      which is what time travel and streaming reads on a shared table require.
+      MODIFY does not exist for shares, recipients only ever get SELECT. Sharing
+      the whole schema changes scope, not history availability. Change data feed
+      settings live on the provider table, and the recipient cannot enable
+      anything on a read-only shared catalog.
+  - type: multi
+    prompt: Which of these objects can be shared with a Databricks-to-Databricks recipient but not directly with a token-based open sharing recipient? Select all that apply.
+    options:
+      - Delta tables
+      - Volumes
+      - Notebooks
+      - Registered AI models
+    answer: [1, 2, 3]
+    explanation: |
+      Volumes, notebooks and AI models require D2D sharing, an open recipient has
+      no way to consume them through the token protocol. Delta tables are the one
+      object type both modes handle, they are the core of the open protocol.
+    verify: true
+sources:
+  - https://docs.databricks.com/aws/en/delta-sharing/
+  - https://docs.databricks.com/aws/en/delta-sharing/create-share
+  - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-share
+  - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-share
+  - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-recipient
+  - https://docs.databricks.com/aws/en/sql/language-manual/security-grant-share

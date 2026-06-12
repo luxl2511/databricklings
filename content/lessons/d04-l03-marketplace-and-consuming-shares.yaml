@@ -1,0 +1,128 @@
+id: d04-l03
+domain: 4
+order: 3
+title: Databricks Marketplace and consuming shares
+body: |
+  The third leg of the sharing story is the Marketplace, plus what happens on the
+  consumer side once data has been shared with you.
+
+  ## What the Marketplace is
+
+  Databricks Marketplace is an open exchange where data providers and partners
+  publish listings that consumers can discover and pull straight into their
+  workspace. Under the hood it runs on Delta Sharing, so the same protocol and
+  the same read-only guarantees apply. Because the protocol is open, consumers do
+  not strictly need Databricks: external clients like pandas, Power BI or Spark
+  can consume open listings too.
+
+  Listings are not only datasets. Providers can publish tabular data, volumes for
+  non-tabular files, notebooks, AI models and solution accelerators.
+
+  ## Public listings and private exchanges
+
+  Public listings are visible to every Marketplace visitor. Some grant instant
+  access, you accept the terms and the share lands in your metastore right away.
+  Others are request-based, the provider reviews who is asking before granting.
+  When a provider only wants a closed circle of partners to see a listing at all,
+  they publish it to a private exchange whose membership they control.
+
+  ## Consuming shared data
+
+  Whether a share arrives through the Marketplace or through a direct
+  Databricks-to-Databricks grant, the consumer mounts it as a catalog:
+
+  ```sql
+  -- list providers and what they shared with this metastore
+  SHOW PROVIDERS;
+  SHOW SHARES IN PROVIDER acme_weather;
+
+  -- mount the share as a catalog
+  CREATE CATALOG weather USING SHARE acme_weather.daily_observations;
+
+  SELECT station_id, avg(temp_c)
+  FROM weather.obs.readings
+  WHERE obs_date >= '2026-01-01'
+  GROUP BY station_id;
+  ```
+
+  From here normal three-level namespace queries work, and the catalog owner can
+  grant access inside the consuming workspace with regular Unity Catalog grants.
+  The crucial property: the data stays in the provider's storage and the catalog
+  is read-only. No INSERT, UPDATE, DELETE or MERGE, and no OPTIMIZE either. If
+  the consumer needs to modify the data, they copy it into their own catalog
+  first, for example with CREATE TABLE AS SELECT, accepting that the copy goes
+  stale while the shared catalog always shows the provider's live state.
+
+  Marketplace plus Delta Sharing questions on the exam usually test exactly these
+  points: powered by Delta Sharing, works without the consumer running
+  Databricks, private exchanges for restricted audiences, and shared catalogs
+  being live but read-only.
+exercises:
+  - type: mcq
+    prompt: Which technology does Databricks Marketplace use to deliver data listings to consumers?
+    options:
+      - Delta Sharing
+      - Lakehouse Federation
+      - Auto Loader
+      - Cross-workspace catalog binding
+    answer: [0]
+    explanation: |
+      Marketplace is built on Delta Sharing, listings arrive as shares and mount
+      as read-only catalogs. Federation is for querying external databases you
+      have credentials for, the opposite direction. Auto Loader ingests files.
+      Catalog binding scopes catalogs to workspaces inside one account, it moves
+      no data between organizations.
+  - type: mcq
+    prompt: >
+      A data provider wants to offer a premium dataset on the Marketplace, but
+      only three named partner companies should even see the listing. What fits?
+    options:
+      - Publish the listing to a private exchange with the three partners as members
+      - Publish a public listing and set it to request-based approval
+      - Publish a public listing with instant access but an aggressive license text
+      - Email the partners parquet extracts and skip the Marketplace
+    answer: [0]
+    explanation: |
+      A private exchange controls who can see the listing at all, which is the
+      stated requirement. Request-based approval hides nothing, everyone sees the
+      listing and can ask. License text does not stop visibility or access on an
+      instant listing. Emailing extracts loses the live, governed sharing the
+      provider wanted from the Marketplace.
+  - type: fill_blank
+    prompt: >
+      A consumer acquires a Marketplace dataset into their metastore. In terms of
+      write access, what kind of catalog do they get? (two words or one)
+    answers: ["read-only", "read only", "readonly"]
+    explanation: |
+      Shared data mounts as a read-only catalog. The data stays in the provider's
+      storage, the consumer can query but never write, and the provider can
+      update or revoke the share at any time.
+  - type: predict_output
+    prompt: A data analyst in the consuming workspace runs this against a catalog mounted from a Delta share. What happens?
+    code: |
+      UPDATE weather.obs.readings
+      SET temp_c = temp_c + 0.5
+      WHERE station_id = 'B-117';
+    code_lang: sql
+    options:
+      - The statement fails, catalogs created from shares are read-only
+      - The update succeeds and is written back to the provider's table
+      - The update succeeds locally in a shallow clone, the provider is untouched
+      - The statement silently affects zero rows
+    answer: [0]
+    explanation: |
+      Writes against a shared catalog fail outright, Delta Sharing gives
+      recipients SELECT and nothing else. Nothing is ever written back to the
+      provider. No clone is created implicitly, the consumer would have to copy
+      the data into an owned catalog themselves. The failure is loud, not a
+      silent zero-row update.
+  - type: fill_blank
+    prompt: "Complete the consumer-side statement that mounts a share as a catalog: CREATE CATALOG weather USING ____ acme_weather.daily_observations;"
+    answers: ["SHARE", "share"]
+    explanation: |
+      CREATE CATALOG ... USING SHARE provider_name.share_name mounts the share.
+      From then on the consumer queries it with normal three-level names and
+      manages access with regular Unity Catalog grants.
+sources:
+  - https://docs.databricks.com/aws/en/marketplace/
+  - https://docs.databricks.com/aws/en/delta-sharing/

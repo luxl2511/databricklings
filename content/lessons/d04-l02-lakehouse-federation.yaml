@@ -1,0 +1,152 @@
+id: d04-l02
+domain: 4
+order: 2
+title: Lakehouse Federation, connections and foreign catalogs
+body: |
+  Lakehouse Federation lets you query external databases through Unity Catalog
+  without ingesting the data first. Two securables make it work: a connection and
+  a foreign catalog.
+
+  ## Connections
+
+  A connection stores the credentials and endpoint details for one external
+  system. It is a Unity Catalog securable, so access to it is governed like any
+  other object:
+
+  ```sql
+  CREATE CONNECTION pg_conn TYPE POSTGRESQL
+    OPTIONS (
+      host 'shop-db.example.com',
+      port '5432',
+      user secret('fed_scope', 'pg_user'),
+      password secret('fed_scope', 'pg_password')
+    );
+  ```
+
+  Query federation supports MySQL, PostgreSQL, Oracle, SQL Server, Azure Synapse,
+  Teradata, Amazon Redshift, Snowflake, Google BigQuery, Salesforce Data 360 and
+  other Databricks workspaces. There is also catalog federation for Hive
+  metastore, AWS Glue and similar metastore-level sources, where Databricks reads
+  the files in object storage directly instead of going through JDBC.
+
+  ## Foreign catalogs
+
+  A foreign catalog mirrors one database of the external system into Unity
+  Catalog, so users query it with normal three-level names:
+
+  ```sql
+  CREATE FOREIGN CATALOG pg_sales
+    USING CONNECTION pg_conn
+    OPTIONS (database 'shopdb');
+
+  SELECT * FROM pg_sales.public.orders WHERE order_date >= '2026-01-01';
+  ```
+
+  The catalog is populated with the schemas and tables the connection user can
+  see, and Unity Catalog grants, lineage and auditing apply on top. Federated
+  tables are read-only through the foreign catalog.
+
+  ## Pushdown behavior and limits
+
+  Databricks pushes work down to the source over JDBC to cut network transfer.
+  What pushes down:
+
+  - Filters and projections, when the expression translates to the source
+    dialect. Predicates joined by AND are split, the translatable part still
+    pushes down.
+  - Limits and aggregates in many cases.
+  - Joins for inner, left outer and right outer joins. Join pushdown fails when a
+    limit, offset or aggregate sits below the join in the plan.
+
+  What does not push down: expressions with no translation on the source, the
+  classic example is ILIKE against MySQL. Then Databricks fetches all rows and
+  filters locally, which is the usual cause of "the federated query is slow".
+  Check the plan with EXPLAIN FORMATTED to see which operators made it to the
+  source. For big reads, tune fetchSize and use numPartitions with
+  partitionColumn, lowerBound and upperBound on an indexed numeric column to read
+  in parallel.
+
+  Federation fits ad-hoc analytics, proofs of concept and incremental
+  migrations. For heavy repeated ETL over the same source data, ingesting into
+  Delta is usually cheaper and faster than hammering the operational database.
+exercises:
+  - type: mcq
+    prompt: In Lakehouse Federation, what exactly does a connection object hold?
+    options:
+      - Credentials and endpoint details for one external system, as a Unity Catalog securable
+      - A cached snapshot of the external tables, refreshed on a schedule
+      - The mapping of one external database to a Unity Catalog catalog
+      - A JDBC driver jar uploaded by the workspace admin
+    answer: [0]
+    explanation: |
+      The connection is the credential and endpoint securable, governed by Unity
+      Catalog grants. It caches no data, federation reads live. Mapping one
+      external database into UC is the job of the foreign catalog built on top of
+      the connection. Drivers for supported sources ship with the runtime, nobody
+      uploads jars.
+  - type: fill_blank
+    prompt: "Complete the statement: CREATE FOREIGN CATALOG pg_sales ____ CONNECTION pg_conn OPTIONS (database 'shopdb');"
+    answers: ["USING", "using"]
+    explanation: |
+      The clause is USING CONNECTION, it binds the foreign catalog to the
+      connection that holds the credentials. The OPTIONS clause then picks the
+      database on that server.
+  - type: mcq
+    prompt: A federated query against a MySQL foreign catalog filters with ILIKE on a 400 million row table and takes 40 minutes. What is the most likely cause?
+    code: |
+      SELECT order_id, customer_name
+      FROM mysql_shop.shopdb.orders
+      WHERE customer_name ILIKE '%gmbh%';
+    code_lang: sql
+    options:
+      - ILIKE has no MySQL translation, so all rows are fetched and filtered on Databricks
+      - MySQL foreign catalogs never push down any predicate
+      - The query is missing a LIMIT, which is required for pushdown
+      - Unity Catalog audit logging adds per-row overhead on federated reads
+    answer: [0]
+    explanation: |
+      ILIKE cannot be translated to MySQL, the filter stays on the Databricks
+      side and the full table travels over JDBC. Plain translatable predicates do
+      push down to MySQL, so option two is wrong. LIMIT is never a requirement
+      for pushdown. Audit logging records events, it adds nothing per row.
+  - type: spot_bug
+    prompt: This setup for a PostgreSQL foreign catalog fails. What is wrong?
+    code: |
+      CREATE CONNECTION pg_conn TYPE POSTGRESQL
+        OPTIONS (host 'shop-db.example.com', port '5432',
+                 user 'fed_reader', password 'pw123');
+
+      CREATE FOREIGN CATALOG pg_sales
+        USING CONNECTION pg_conn;
+    code_lang: sql
+    options:
+      - The foreign catalog is missing OPTIONS (database '...') to pick the PostgreSQL database
+      - CREATE CONNECTION needs a USING JDBC clause with the full connection string
+      - Foreign catalogs require MANAGED LOCATION like regular catalogs
+      - The connection type must be POSTGRES, not POSTGRESQL
+    answer: [0]
+    explanation: |
+      A PostgreSQL connection points at a server, the foreign catalog must name
+      which database on it to mirror, so OPTIONS (database 'shopdb') is required.
+      Connections take TYPE plus OPTIONS keys, no raw JDBC string. Foreign
+      catalogs hold no data of their own, so no managed location. POSTGRESQL is
+      the correct type name.
+  - type: mcq
+    prompt: Which of these sources is NOT available through Lakehouse Federation query federation?
+    options:
+      - MongoDB
+      - Snowflake
+      - Google BigQuery
+      - Teradata
+      - Salesforce Data 360
+    answer: [0]
+    explanation: |
+      Query federation covers relational and warehouse sources, MySQL,
+      PostgreSQL, Oracle, SQL Server, Synapse, Teradata, Redshift, Snowflake,
+      BigQuery, Salesforce Data 360 and Databricks itself. MongoDB is a document
+      store and is not on the list, you would ingest it instead.
+sources:
+  - https://docs.databricks.com/aws/en/query-federation/
+  - https://docs.databricks.com/aws/en/query-federation/performance-recommendations
+  - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-connection
+  - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-catalog

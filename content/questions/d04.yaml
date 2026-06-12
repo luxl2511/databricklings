@@ -1,0 +1,373 @@
+questions:
+  - id: d04-q001
+    domain: 4
+    subtopic: sharing-mode
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      A logistics company on Databricks must give a partner read access to a
+      curated Delta table of shipment events. The partner has no Databricks
+      account and analyzes data with pandas and Power BI. The data must stay
+      live, no scheduled exports. Which approach meets the requirement?
+    options:
+      - Create a share, create a token-based recipient, send the activation link, and grant SELECT on the share
+      - Create a recipient with USING ID and ask the partner for their metastore identifier
+      - Schedule a nightly job that copies the table to an SFTP server the partner can reach
+      - Create a foreign catalog in the partner's environment pointing at the Databricks workspace
+    answer: [0]
+    explanation: |
+      Open Delta Sharing exists exactly for recipients outside Databricks: a
+      token-based recipient activates the link, downloads a credential file and
+      queries the live table from pandas or Power BI through the open protocol.
+      USING ID is for Databricks-to-Databricks and needs a metastore the partner
+      does not have. The SFTP copy is not live and adds pipeline maintenance.
+      Foreign catalogs are a Lakehouse Federation concept inside Databricks, the
+      partner has no workspace to create one in.
+    sources:
+      - https://docs.databricks.com/aws/en/delta-sharing/
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-recipient
+
+  - id: d04-q002
+    domain: 4
+    subtopic: recipients
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      Your metastore runs on AWS in eu-west-1. A subsidiary runs its own
+      Databricks account on Azure with Unity Catalog. You want to share several
+      schemas with them without managing any tokens. What do you need from the
+      subsidiary to create the recipient?
+    options:
+      - The output of current_metastore() run in their workspace, used in CREATE RECIPIENT ... USING ID
+      - A personal access token of their workspace admin
+      - Their workspace URL and workspace ID from the browser address bar
+      - Nothing, cross-cloud sharing requires an open sharing recipient with a bearer token
+      - The storage account URL of their metastore root
+    answer: [0]
+    explanation: |
+      Databricks-to-Databricks sharing works across accounts and clouds. The
+      recipient runs current_metastore(), which returns the sharing identifier in
+      cloud:region:metastore-uuid form, and the provider passes it to CREATE
+      RECIPIENT ... USING ID. No PATs are involved, authentication is handled by
+      the platform. Workspace URL and ID identify a workspace, not the metastore
+      that sharing binds to. Cross-cloud does not force open sharing, D2D handles
+      it. The metastore root storage location is irrelevant to recipient
+      creation.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-recipient
+
+  - id: d04-q003
+    domain: 4
+    subtopic: share-objects
+    difficulty: medium
+    type: multi_select
+    stem: |
+      A provider wants one share to deliver a complete solution to a partner:
+      Delta tables, a volume with PDF documents, two notebooks with usage
+      examples, and a registered model. Which of the listed assets require the
+      recipient to be a Databricks-to-Databricks recipient rather than a
+      token-based open sharing recipient? Select all that apply.
+    options:
+      - The Delta tables
+      - The volume with PDF documents
+      - The notebooks
+      - The registered model
+    answer: [1, 2, 3]
+    explanation: |
+      Volumes, notebooks and registered models can only be consumed by
+      Databricks-to-Databricks recipients, the open token protocol has no way to
+      deliver them. Delta tables are the core of the open protocol and work for
+      both recipient kinds, so they do not force D2D on their own.
+    verify: true
+    sources:
+      - https://docs.databricks.com/aws/en/delta-sharing/
+      - https://docs.databricks.com/aws/en/delta-sharing/create-share
+
+  - id: d04-q004
+    domain: 4
+    subtopic: partition-filtering
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A SaaS vendor shares a usage table with 40 customers. Each customer may
+      only see rows of its own tenant, and the team refuses to maintain 40
+      separate shares. The table is partitioned by tenant_id. What is the
+      cleanest provider-side setup?
+    code: |
+      ALTER SHARE usage_share
+        ADD TABLE billing.usage_events
+        PARTITION (tenant_id = CURRENT_RECIPIENT().tenant_id);
+    code_lang: sql
+    options:
+      - Add the table once with a partition filter on CURRENT_RECIPIENT() and set a tenant_id property on each recipient
+      - Create 40 dynamic views with IS_ACCOUNT_GROUP_MEMBER() and add each view to the share
+      - Add the full table and rely on the recipients to filter their own tenant in queries
+      - Create one share per tenant and add the table with a literal partition value in each
+    answer: [0]
+    explanation: |
+      CURRENT_RECIPIENT().tenant_id resolves the property set on whichever
+      recipient is querying, so one share and one table entry serve all 40
+      customers with correct isolation. Dynamic views with group functions are
+      for users inside the metastore, recipients are not account group members.
+      Trusting recipients to filter themselves is a data leak, every recipient
+      would see all tenants. Forty shares with literal partition values work but
+      are exactly the maintenance burden the team rejected.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-share
+
+  - id: d04-q005
+    domain: 4
+    subtopic: share-history
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      A D2D recipient mounts your share and starts a Structured Streaming read
+      against the shared table fact_orders. The stream fails immediately, and
+      time travel queries with VERSION AS OF also fail, while plain SELECTs work
+      fine. Which provider-side change fixes both problems?
+    options:
+      - Re-add the table to the share specifying WITH HISTORY
+      - Set delta.enableChangeDataFeed to true on fact_orders
+      - Increase delta.logRetentionDuration on fact_orders to 90 days
+      - Tell the recipient to create a deep clone and stream from the clone
+      - Grant the recipient SELECT on the underlying catalog instead of the share
+    answer: [0]
+    explanation: |
+      Streaming reads and time travel on a shared table need the table history,
+      which is only shared when the table was added WITH HISTORY. Change data
+      feed is a separate feature, enabling it does not expose history through the
+      share. Log retention controls how long history exists on the provider, not
+      whether it is shared. A deep clone gives the recipient a static copy, the
+      stream would see no new data and the requirement was live streaming.
+      Recipients are external principals, they cannot be granted on the
+      provider's catalog at all.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-share
+
+  - id: d04-q006
+    domain: 4
+    subtopic: recipients
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      You created a token-based recipient for an external partner last week, but
+      the partner says they never received any credentials. Which statement
+      retrieves the activation link you need to resend?
+    options:
+      - DESCRIBE RECIPIENT partner_co
+      - SHOW GRANTS ON RECIPIENT partner_co
+      - SELECT * FROM system.information_schema.recipient_tokens
+      - ALTER RECIPIENT partner_co REGENERATE LINK
+    answer: [0]
+    explanation: |
+      DESCRIBE RECIPIENT returns the recipient's metadata including the
+      activation link and token expiration. SHOW GRANTS lists which shares the
+      recipient can access, not its credentials. There is no documented
+      information_schema view that hands out activation links. ALTER RECIPIENT
+      has no REGENERATE LINK clause, token rotation goes through the recipient
+      rotation API or UI.
+    sources:
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-recipient
+
+  - id: d04-q007
+    domain: 4
+    subtopic: federation-setup
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      An analytics team needs read access to three databases on one PostgreSQL
+      server through Unity Catalog. Security insists that the database password
+      is stored once, governed centrally, and never appears in user code. What is
+      the minimal correct setup?
+    options:
+      - One CREATE CONNECTION holding the credentials, then one CREATE FOREIGN CATALOG per database, then UC grants on the catalogs
+      - One CREATE FOREIGN CATALOG per database, each with host, user and password in its OPTIONS
+      - A storage credential and an external location pointing at the PostgreSQL host
+      - One CREATE CONNECTION per database, since a connection maps to exactly one database
+    answer: [0]
+    explanation: |
+      The connection is the single credential-bearing securable for the server,
+      and each foreign catalog mirrors one database through it, so one connection
+      plus three foreign catalogs is minimal and the password lives in one place.
+      Foreign catalogs do not carry credentials, they reference a connection.
+      Storage credentials and external locations govern object storage paths, not
+      JDBC sources. A connection maps to a server, not a database, so per-database
+      connections triplicate the secret for nothing.
+    sources:
+      - https://docs.databricks.com/aws/en/query-federation/
+      - https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-connection
+
+  - id: d04-q008
+    domain: 4
+    subtopic: federation-setup
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A data engineering lead is deciding where Lakehouse Federation fits in the
+      platform. For which of these workloads is querying through a foreign
+      catalog the right call, rather than ingesting the data into Delta first?
+    options:
+      - Analysts exploring a small operational PostgreSQL database ad hoc to decide whether a full ingestion pipeline is worth building
+      - An hourly ETL job that joins two terabytes from the operational database with lakehouse tables
+      - A customer-facing dashboard that hits the data hundreds of times per minute
+      - A CDC replication feed that must capture every change from the source
+    answer: [0]
+    explanation: |
+      Federation shines for ad-hoc exploration and proofs of concept: no
+      pipeline, live data, Unity Catalog governance on top. The hourly
+      two-terabyte join would drag huge volumes over JDBC every hour and hammer
+      the operational database, ingestion is cheaper and safer. The high-QPS
+      dashboard would do the same hammering at request time. CDC capture is an
+      ingestion problem by definition, federation reads current state and
+      captures no change stream.
+    sources:
+      - https://docs.databricks.com/aws/en/query-federation/
+
+  - id: d04-q009
+    domain: 4
+    subtopic: pushdown
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      This federated query against SQL Server takes 50 minutes. EXPLAIN FORMATTED
+      shows no filter was pushed to the source, the whole 900 million row table
+      is transferred and filtered on Databricks. mask_match is a Python UDF.
+      Which change cuts the transferred volume the most while keeping the logic?
+    code: |
+      SELECT order_id, amount
+      FROM sqlsrv_cat.dbo.orders
+      WHERE mask_match(customer_ref)
+        AND order_date >= '2026-05-01';
+    code_lang: sql
+    options:
+      - Nothing else needed, the order_date predicate already pushes down because predicates joined by AND push down independently, so investigate the UDF instead
+      - Rewrite so the UDF runs first in a subquery, then filter on order_date
+      - Increase fetchSize to 100000 so the transfer finishes faster
+      - Switch the connection type from SQLSERVER to a generic JDBC connection
+    answer: [0]
+    explanation: |
+      AND-joined predicates are split for pushdown: order_date >= '2026-05-01'
+      translates to T-SQL and should push down even though the UDF part cannot,
+      so the expected behavior is that only May-and-later rows transfer. When the
+      plan shows no pushdown at all, the UDF wrapping is the thing to fix, for
+      example by checking that the pushable predicate is genuinely AND-joined at
+      the top level. Reordering so the UDF runs first changes nothing about what
+      the source can evaluate, the UDF can never push down. A bigger fetchSize
+      moves the same 900 million rows a bit faster, it does not reduce volume.
+      The connection type does not control predicate translation, SQLSERVER is
+      already the right type.
+    verify: true
+    sources:
+      - https://docs.databricks.com/aws/en/query-federation/performance-recommendations
+
+  - id: d04-q010
+    domain: 4
+    subtopic: pushdown
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A one-off federated read of a 300 GB Oracle table runs on a large cluster,
+      but only one executor core is busy and the read crawls through a single
+      JDBC connection. What makes the read parallel?
+    options:
+      - Set numPartitions together with partitionColumn, lowerBound and upperBound on an indexed numeric column
+      - Add more worker nodes to the cluster
+      - Enable Photon on the cluster
+      - Raise spark.sql.shuffle.partitions to 2000
+    answer: [0]
+    explanation: |
+      JDBC reads are single-connection unless you give Spark a partitioning
+      scheme: numPartitions with partitionColumn, lowerBound and upperBound
+      splits the table into ranges read in parallel, ideally on an indexed,
+      evenly distributed numeric column. More workers idle just the same, the
+      bottleneck is one connection, not capacity. Photon accelerates query
+      execution, not JDBC ingest. Shuffle partitions apply after data is read,
+      they do not touch the source read parallelism.
+    sources:
+      - https://docs.databricks.com/aws/en/query-federation/performance-recommendations
+
+  - id: d04-q011
+    domain: 4
+    subtopic: catalog-federation
+    difficulty: medium
+    type: multiple_choice
+    stem: |
+      A company migrates incrementally from a legacy Hive metastore whose tables
+      live as parquet in S3. During the multi-month migration, users must query
+      those tables through Unity Catalog with full performance, no JDBC hop, and
+      no bulk rewrite of data. What fits?
+    options:
+      - Catalog federation with a federated Hive metastore catalog, Databricks compute reads the files in S3 directly
+      - Query federation with a JDBC connection to the Hive metastore's backing MySQL database
+      - Delta Sharing from the legacy environment into the new metastore
+      - CTAS every Hive table into Unity Catalog managed tables before anyone queries
+    answer: [0]
+    explanation: |
+      Catalog federation is built for this: the federated Hive metastore catalog
+      exposes the legacy tables in Unity Catalog while Databricks reads the
+      underlying S3 files directly, no JDBC in the path. A JDBC connection to the
+      metastore's MySQL would only reach table metadata rows, not the data, and
+      the metastore database is not a query engine. Delta Sharing needs a Delta
+      Sharing server or Databricks provider on the legacy side and adds protocol
+      overhead for tables you already own. CTAS-everything is the bulk rewrite
+      the requirement explicitly excluded.
+    sources:
+      - https://docs.databricks.com/aws/en/query-federation/
+
+  - id: d04-q012
+    domain: 4
+    subtopic: marketplace
+    difficulty: easy
+    type: multiple_choice
+    stem: |
+      A research group without any Databricks subscription finds a public weather
+      dataset on Databricks Marketplace. They work in Power BI and Python. Can
+      they use the listing?
+    options:
+      - Yes, Marketplace runs on Delta Sharing, open listings can be consumed from external clients like Power BI and pandas
+      - No, Marketplace listings can only be installed into a Unity Catalog metastore
+      - Yes, but only by downloading a one-time CSV snapshot of the dataset
+      - No, they must first buy a Databricks SQL warehouse to authenticate
+    answer: [0]
+    explanation: |
+      Marketplace delivery is Delta Sharing, and the open protocol works from
+      external clients, so Power BI and pandas can consume the listing with the
+      shared credential. A metastore gives the deepest integration but is not the
+      only path. Delivery is live shared tables, not CSV snapshots. No Databricks
+      compute purchase is needed to authenticate against an open share.
+    sources:
+      - https://docs.databricks.com/aws/en/marketplace/
+
+  - id: d04-q013
+    domain: 4
+    subtopic: sharing-mode
+    difficulty: hard
+    type: multiple_choice
+    stem: |
+      A provider on AWS Databricks must deliver a complete package to one partner
+      on GCP Databricks with Unity Catalog: live tables, example notebooks and a
+      registered model. Legal requires that the provider can revoke access at any
+      moment and that no data is duplicated into partner-owned storage. What is
+      the best approach?
+    options:
+      - One Databricks-to-Databricks share containing the tables, notebooks and model, granted to a recipient created with the partner's sharing identifier
+      - A token-based open sharing recipient, since the partner sits on a different cloud
+      - A scheduled job replicating the tables and model artifacts into a GCS bucket the partner owns
+      - Lakehouse Federation, with the partner creating a foreign catalog against the provider's workspace
+      - A public Marketplace listing with instant access that the partner installs
+    answer: [0]
+    explanation: |
+      D2D sharing works across clouds and is the only mode that carries
+      notebooks and models alongside tables, and revoking the grant or the
+      recipient cuts access instantly while data stays in provider storage. The
+      different cloud does not force open sharing, and open sharing could not
+      deliver the notebooks and model anyway. Replication into a partner bucket
+      violates both legal requirements, duplicated data the provider cannot pull
+      back. A Databricks federation connection serves the partner's own
+      credentialed database access pattern and does not package notebooks or
+      models as shared assets. A public listing exposes the package to everyone,
+      not just the partner, a private exchange would be needed at minimum and is
+      still more machinery than a direct share.
+    sources:
+      - https://docs.databricks.com/aws/en/delta-sharing/
+      - https://docs.databricks.com/aws/en/delta-sharing/create-share
